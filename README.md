@@ -29,7 +29,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-mongodb-ro = "0.1"
+mongodb-ro = "0.1.1"
 ```
 
 ## Usage
