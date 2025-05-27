@@ -12,7 +12,7 @@ pub struct ColumnAttr {
 }
 impl ColumnAttr {
     pub fn is_index(&self) -> bool {
-        if self.asc || self.desc || self.sphere2d || self.text.is_some() {
+        if self.unique ||self.asc || self.desc || self.sphere2d || self.text.is_some() {
             return true;
         }
         false
