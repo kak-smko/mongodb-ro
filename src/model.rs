@@ -391,7 +391,7 @@ where
 
         self.rename_field(&mut data, is_opt);
         if !is_opt {
-            data = doc! {"$set":data,"$setOnInsert":{}};
+            data = doc! {"$set":data};
         }
         if self.add_times {
             if !data.contains_key("$set") {
@@ -411,7 +411,7 @@ where
                     .unwrap()
                     .as_document_mut()
                     .unwrap();
-                set.insert("$setOnInsert", doc! {"created_at":  DateTime::now()});
+                set.insert("created_at",  DateTime::now());
             }
         }
         let whr = &self._mongo.r#where;
