@@ -94,6 +94,21 @@ where
         model
     }
 
+    /// add lazy column to model
+    pub fn add_columns(&mut self, names:Vec<&'a str>){
+        for name in names {
+            self.columns.insert(name, ColumnAttr {
+                asc: false,
+                desc: false,
+                unique: false,
+                sphere2d: false,
+                text: None,
+                hidden: false,
+                name: Some(name.to_string()),
+            });
+        }
+    }
+
     /// Gets the collection name
     pub fn collection_name(&self) -> &'a str {
         self.collection_name
