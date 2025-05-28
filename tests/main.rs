@@ -178,11 +178,9 @@ async fn transaction_with_session() {
         .unwrap();
 }
 
-async fn get_db() -> Arc<Database> {
-    Arc::new(
+async fn get_db() -> Database {
         Client::with_uri_str("mongodb://localhost:27017")
             .await
             .expect("failed to connect")
-            .database("test"),
-    )
+            .database("test")
 }

@@ -37,7 +37,7 @@ where
     #[serde(skip_serializing)]
     req: Option<M::Req>,
     #[serde(skip)]
-    db: Arc<Database>,
+    db: Database,
     #[serde(skip)]
     collection_name: &'a str,
     #[serde(skip)]
@@ -73,7 +73,7 @@ where
     M: Unpin,
 {
     pub fn new(
-        db: &Arc<Database>,
+        db: &Database,
         req: Option<M::Req>,
         collection_name: &'a str,
         columns: &'a str,
