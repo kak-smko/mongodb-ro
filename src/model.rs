@@ -2,10 +2,11 @@ use crate::column::ColumnAttr;
 use crate::event::Boot;
 use futures_util::StreamExt;
 use log::error;
+use mongodb::action::EstimatedDocumentCount;
 use mongodb::bson::{doc, to_document, Document};
 use mongodb::bson::{Bson, DateTime};
 use mongodb::error::{Error, Result};
-use mongodb::options::IndexOptions;
+use mongodb::options::{CountOptions, IndexOptions};
 use mongodb::results::InsertOneResult;
 use mongodb::{bson, ClientSession, Collection, Database, IndexModel};
 use serde::de::DeserializeOwned;
@@ -95,17 +96,20 @@ where
     }
 
     /// add lazy column to model
-    pub fn add_columns(&mut self, names:Vec<&'a str>){
+    pub fn add_columns(&mut self, names: Vec<&'a str>) {
         for name in names {
-            self.columns.insert(name, ColumnAttr {
-                asc: false,
-                desc: false,
-                unique: false,
-                sphere2d: false,
-                text: None,
-                hidden: false,
-                name: Some(name.to_string()),
-            });
+            self.columns.insert(
+                name,
+                ColumnAttr {
+                    asc: false,
+                    desc: false,
+                    unique: false,
+                    sphere2d: false,
+                    text: None,
+                    hidden: false,
+                    name: Some(name.to_string()),
+                },
+            );
         }
     }
 
@@ -232,7 +236,7 @@ where
 
     /// Reset all filters
     pub fn reset(mut self) -> Model<'a, M> {
-        self._mongo= Default::default();
+        self._mongo = Default::default();
         self
     }
     /// Adds a filter condition to the query
@@ -285,6 +289,35 @@ where
     pub fn upsert(mut self) -> Model<'a, M> {
         self._mongo.upsert = true;
         self
+    }
+
+    /// Get Documents count with filters
+    pub async fn count_documents(self) -> Result<u64> {
+        let whr = &self._mongo.r#where;
+        let collection = self.db.collection::<Document>(self.collection_name);
+        let filter = if whr.is_empty() {
+            doc! {}
+        } else {
+            doc! { "$and": whr }
+        };
+
+        let options = CountOptions::builder()
+            .skip(if self._mongo.skip > 0 {
+                Some(self._mongo.skip as u64)
+            } else {
+                None
+            })
+            .limit(if self._mongo.limit > 0 {
+                Some(self._mongo.limit as u64)
+            } else {
+                None
+            })
+            .build();
+
+        collection
+            .count_documents(filter)
+            .with_options(options)
+            .await
     }
 
     /// Creates a new document in the collection
@@ -426,7 +459,7 @@ where
                     .unwrap()
                     .as_document_mut()
                     .unwrap();
-                set.insert("created_at",  DateTime::now());
+                set.insert("created_at", DateTime::now());
             }
         }
         let whr = &self._mongo.r#where;
@@ -626,14 +659,14 @@ where
             None => {
                 let mut cursor = find.await?;
                 while let Some(d) = cursor.next().await {
-                    r.push(self.clear(self.cast(d?,&self.req), &hidden_fields))
+                    r.push(self.clear(self.cast(d?, &self.req), &hidden_fields))
                 }
                 Ok(r)
             }
             Some(s) => {
                 let mut cursor = find.session(&mut *s).await?;
                 while let Some(d) = cursor.next(&mut *s).await {
-                    r.push(self.clear(self.cast(d?,&self.req), &hidden_fields))
+                    r.push(self.clear(self.cast(d?, &self.req), &hidden_fields))
                 }
                 Ok(r)
             }
@@ -664,14 +697,14 @@ where
             None => {
                 let mut cursor = res.await?;
                 while let Some(d) = cursor.next().await {
-                    r.push(self.clear(self.cast(d?,&self.req), &hidden_fields))
+                    r.push(self.clear(self.cast(d?, &self.req), &hidden_fields))
                 }
                 Ok(r)
             }
             Some(s) => {
                 let mut cursor = res.session(&mut *s).await?;
                 while let Some(d) = cursor.next(&mut *s).await {
-                    r.push(self.clear(self.cast(d?,&self.req), &hidden_fields))
+                    r.push(self.clear(self.cast(d?, &self.req), &hidden_fields))
                 }
                 Ok(r)
             }
@@ -705,14 +738,14 @@ where
             None => {
                 let mut cursor = find.await?;
                 while let Some(d) = cursor.next().await {
-                    r.push(self.cast(d?,&self.req))
+                    r.push(self.cast(d?, &self.req))
                 }
                 Ok(r)
             }
             Some(s) => {
                 let mut cursor = find.session(&mut *s).await?;
                 while let Some(d) = cursor.next(&mut *s).await {
-                    r.push(self.cast(d?,&self.req))
+                    r.push(self.cast(d?, &self.req))
                 }
                 Ok(r)
             }
@@ -745,14 +778,14 @@ where
             None => {
                 let mut cursor = res.await?;
                 while let Some(d) = cursor.next().await {
-                    r.push(self.cast(d?,&self.req))
+                    r.push(self.cast(d?, &self.req))
                 }
                 Ok(r)
             }
             Some(s) => {
                 let mut cursor = res.session(&mut *s).await?;
                 while let Some(d) = cursor.next(&mut *s).await {
-                    r.push(self.cast(d?,&self.req))
+                    r.push(self.cast(d?, &self.req))
                 }
                 Ok(r)
             }

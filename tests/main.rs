@@ -4,7 +4,6 @@ use mongodb::{Client, Database};
 use mongodb_ro::event::Boot;
 use mongodb_ro::Model;
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
 
 #[derive(Serialize, Deserialize, Debug, Default, Model)]
 #[model(collection = "user")]
@@ -23,6 +22,82 @@ struct User {
 }
 impl Boot for User {
     type Req = bool;
+}
+
+#[tokio::test]
+async fn test_count_documents() {
+    let db = get_db().await;
+
+    User::new_model(&db, None)
+        .r#where(doc! {"name": "test_count_user"})
+        .all()
+        .delete(None)
+        .await
+        .unwrap();
+
+    // Insert test data
+    for i in 0..5 {
+        let mut user = User::new_model(&db, None);
+        user.name = "test_count_user".to_string();
+        user.phone = format!("12345678{}", i);
+        user.age = i as u8;
+        user.create(None).await.unwrap();
+    }
+
+    // Test basic count
+    let total_count = User::new_model(&db, None)
+        .r#where(doc! {"name": "test_count_user"})
+        .count_documents()
+        .await
+        .unwrap();
+    assert_eq!(total_count, 5, "Should count all matching documents");
+
+    // Test count with limit
+    let limited_count = User::new_model(&db, None)
+        .r#where(doc! {"name": "test_count_user"})
+        .limit(3)
+        .count_documents()
+        .await
+        .unwrap();
+    assert_eq!(limited_count, 3, "Should respect limit");
+
+    // Test count with skip
+    let skipped_count = User::new_model(&db, None)
+        .r#where(doc! {"name": "test_count_user"})
+        .skip(2)
+        .count_documents()
+        .await
+        .unwrap();
+    assert_eq!(skipped_count, 3, "Should respect skip");
+
+    // Test count with skip and limit
+    let skip_limit_count = User::new_model(&db, None)
+        .r#where(doc! {"name": "test_count_user"})
+        .skip(1)
+        .limit(2)
+        .count_documents()
+        .await
+        .unwrap();
+    assert_eq!(skip_limit_count, 2, "Should respect both skip and limit");
+
+    // Test count with age filter
+    let age_filter_count = User::new_model(&db, None)
+        .r#where(doc! {
+            "name": "test_count_user",
+            "age": { "$gt": 2 }
+        })
+        .count_documents()
+        .await
+        .unwrap();
+    assert_eq!(age_filter_count, 2, "Should count only documents matching age filter");
+
+    // Clean up
+    User::new_model(&db, None)
+        .r#where(doc! {"name": "test_count_user"})
+        .all()
+        .delete(None)
+        .await
+        .unwrap();
 }
 
 #[tokio::test]
@@ -46,6 +121,7 @@ async fn test_upsert() {
     assert_eq!(user.name, "test_upsert");
     User::new_model(&db, None)
         .r#where(doc! {"name":"test_upsert"})
+        .all()
         .delete(None)
         .await
         .unwrap();
