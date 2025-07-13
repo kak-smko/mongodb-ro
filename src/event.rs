@@ -14,7 +14,7 @@ pub trait Boot {
         log::debug!("{} operation completed: {:?} => {:?}", typ, old, new);
     }
 
-    fn cast(data: Document)->Document{
+    fn cast(&self, data: Document,_req: &Option<Self::Req>,)->Document{
         data
     }
 }

@@ -626,14 +626,14 @@ where
             None => {
                 let mut cursor = find.await?;
                 while let Some(d) = cursor.next().await {
-                    r.push(self.clear(d?, &hidden_fields))
+                    r.push(self.clear(self.cast(d?,&self.req), &hidden_fields))
                 }
                 Ok(r)
             }
             Some(s) => {
                 let mut cursor = find.session(&mut *s).await?;
                 while let Some(d) = cursor.next(&mut *s).await {
-                    r.push(self.clear(d?, &hidden_fields))
+                    r.push(self.clear(self.cast(d?,&self.req), &hidden_fields))
                 }
                 Ok(r)
             }
@@ -664,14 +664,14 @@ where
             None => {
                 let mut cursor = res.await?;
                 while let Some(d) = cursor.next().await {
-                    r.push(self.clear(d?, &hidden_fields))
+                    r.push(self.clear(self.cast(d?,&self.req), &hidden_fields))
                 }
                 Ok(r)
             }
             Some(s) => {
                 let mut cursor = res.session(&mut *s).await?;
                 while let Some(d) = cursor.next(&mut *s).await {
-                    r.push(self.clear(d?, &hidden_fields))
+                    r.push(self.clear(self.cast(d?,&self.req), &hidden_fields))
                 }
                 Ok(r)
             }
@@ -705,14 +705,14 @@ where
             None => {
                 let mut cursor = find.await?;
                 while let Some(d) = cursor.next().await {
-                    r.push(d?)
+                    r.push(self.cast(d?,&self.req))
                 }
                 Ok(r)
             }
             Some(s) => {
                 let mut cursor = find.session(&mut *s).await?;
                 while let Some(d) = cursor.next(&mut *s).await {
-                    r.push(d?)
+                    r.push(self.cast(d?,&self.req))
                 }
                 Ok(r)
             }
@@ -745,14 +745,14 @@ where
             None => {
                 let mut cursor = res.await?;
                 while let Some(d) = cursor.next().await {
-                    r.push(d?)
+                    r.push(self.cast(d?,&self.req))
                 }
                 Ok(r)
             }
             Some(s) => {
                 let mut cursor = res.session(&mut *s).await?;
                 while let Some(d) = cursor.next(&mut *s).await {
-                    r.push(d?)
+                    r.push(self.cast(d?,&self.req))
                 }
                 Ok(r)
             }

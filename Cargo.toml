@@ -1,7 +1,7 @@
 [package]
 name = "mongodb-ro"
-version = "0.1.5"
-edition = "2021"
+version = "1.0.0"
+edition = "2024"
 description = "A high-level, type-safe MongoDB model implementation"
 license = "MIT OR Apache-2.0"
 authors = ["Kak Smko <ba.smko@gmail.com>"]
