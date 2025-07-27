@@ -29,7 +29,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-mongodb-ro = "1.0.0"
+mongodb-ro = "2.0.0"
 ```
 
 ## Usage
@@ -59,7 +59,7 @@ use serde::{Deserialize, Serialize};
 use mongodb_ro::event::Boot;
 
 #[derive(Serialize, Deserialize, Debug, Default, Model)]
-#[model(collection="user",req="bool")]
+#[model(collection="user")]
 struct User {
     _id: Option<ObjectId>,
     name: String,
@@ -92,7 +92,7 @@ use mongodb_ro::event::Boot;
 use actix_web::HttpRequest;
 
 #[derive(Serialize, Deserialize, Debug, Default, Model)]
-#[model(collection="user",req="HttpRequest")]
+#[model(collection="user")]
 struct User {
     _id: Option<ObjectId>,
     name: String,
@@ -110,6 +110,15 @@ struct User {
 impl Boot for User { 
     type Req = HttpRequest;  // Request context type
 }
+
+async fn save(req:HttpRequest) {
+    let db = get_db().await;
+    let mut user_model = User::new_model(&db).set_request(req);
+    user_model.name = "Smko".to_string();
+    user_model.phone = "123456789".to_string();
+    user_model.password = "1234".to_string();
+    user_model.create(None).await.unwrap();
+}
 ```
 
 ### Basic Operations
@@ -119,7 +128,7 @@ impl Boot for User {
 
 async fn save() {
     let db = get_db().await;
-    let mut user_model = User::new_model(&db, None);
+    let mut user_model = User::new_model(&db);
     user_model.name = "Smko".to_string();
     user_model.phone = "123456789".to_string();
     user_model.password = "1234".to_string();
@@ -132,7 +141,7 @@ async fn save() {
 
 async fn find_one() {
     let db = get_db().await;
-    let user_model = User::new_model(&db, None);
+    let user_model = User::new_model(&db);
 
     // Find with visible password (normally hidden)
     let user = user_model
@@ -149,7 +158,7 @@ async fn find_one() {
 ```rust
 async fn update() {
     let db = get_db().await;
-    let user_model = User::new_model(&db, None);
+    let user_model = User::new_model(&db);
     
     // Simple update
     user_model
@@ -172,7 +181,7 @@ async fn update() {
 ```rust
 async fn delete() {
     let db = get_db().await;
-    let user_model = User::new_model(&db, None);
+    let user_model = User::new_model(&db);
     user_model
         .r#where(doc! {"name": "Smko"})
         .all()
@@ -194,14 +203,14 @@ async fn transaction_with_session() {
     session.start_transaction().await.unwrap();
 
     // Create within transaction
-    let mut user_model = User::new_model(&db, None);
+    let mut user_model = User::new_model(&db);
     user_model.name = "TransactionUser".to_string();
     user_model.phone = "987654321".to_string();
     user_model.password = "txn_pass".to_string();
     user_model.create(Some(&mut session)).await.unwrap();
 
     // Verify within transaction
-    let user = User::new_model(&db, None)
+    let user = User::new_model(&db)
         .r#where(doc! {"name": "TransactionUser"})
         .first(Some(&mut session))
         .await
@@ -212,7 +221,7 @@ async fn transaction_with_session() {
     session.commit_transaction().await.unwrap();
 
     // Cleanup
-    User::new_model(&db, None)
+    User::new_model(&db)
         .r#where(doc! {"name": "TransactionUser"})
         .delete(None)
         .await
@@ -224,7 +233,7 @@ async fn transaction_with_session() {
 ```rust
 async fn find_and_collect() {
     let db = get_db().await;
-    let users = User::new_model(&db, None)
+    let users = User::new_model(&db)
         .get(None)
         .await
         .unwrap();
@@ -237,7 +246,6 @@ async fn find_and_collect() {
 | Attribute    | Description                  | Example                        |
 |--------------|------------------------------|--------------------------------|
 | `collection` | Sets MongoDB collection name | `#[model(collection="users")]` |
-| `req`        | Request context type         | `#[model(req="bool")]`         |
 
 
 ## Field Attributes

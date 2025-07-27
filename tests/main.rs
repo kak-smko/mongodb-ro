@@ -1,6 +1,6 @@
 use mongodb::bson::oid::ObjectId;
-use mongodb::bson::{doc, DateTime};
-use mongodb::{Client, Database};
+use mongodb::bson::{doc, DateTime, Document};
+use mongodb::{Client, ClientSession, Database};
 use mongodb_ro::event::Boot;
 use mongodb_ro::Model;
 use serde::{Deserialize, Serialize};
@@ -22,13 +22,14 @@ struct User {
 }
 impl Boot for User {
     type Req = bool;
+
 }
 
 #[tokio::test]
 async fn test_count_documents() {
     let db = get_db().await;
 
-    User::new_model(&db, None)
+    User::new_model(&db)
         .r#where(doc! {"name": "test_count_user"})
         .all()
         .delete(None)
@@ -37,7 +38,7 @@ async fn test_count_documents() {
 
     // Insert test data
     for i in 0..5 {
-        let mut user = User::new_model(&db, None);
+        let mut user = User::new_model(&db);
         user.name = "test_count_user".to_string();
         user.phone = format!("12345678{}", i);
         user.age = i as u8;
@@ -45,7 +46,7 @@ async fn test_count_documents() {
     }
 
     // Test basic count
-    let total_count = User::new_model(&db, None)
+    let total_count = User::new_model(&db)
         .r#where(doc! {"name": "test_count_user"})
         .count_documents()
         .await
@@ -53,7 +54,7 @@ async fn test_count_documents() {
     assert_eq!(total_count, 5, "Should count all matching documents");
 
     // Test count with limit
-    let limited_count = User::new_model(&db, None)
+    let limited_count = User::new_model(&db)
         .r#where(doc! {"name": "test_count_user"})
         .limit(3)
         .count_documents()
@@ -62,7 +63,7 @@ async fn test_count_documents() {
     assert_eq!(limited_count, 3, "Should respect limit");
 
     // Test count with skip
-    let skipped_count = User::new_model(&db, None)
+    let skipped_count = User::new_model(&db)
         .r#where(doc! {"name": "test_count_user"})
         .skip(2)
         .count_documents()
@@ -71,7 +72,7 @@ async fn test_count_documents() {
     assert_eq!(skipped_count, 3, "Should respect skip");
 
     // Test count with skip and limit
-    let skip_limit_count = User::new_model(&db, None)
+    let skip_limit_count = User::new_model(&db)
         .r#where(doc! {"name": "test_count_user"})
         .skip(1)
         .limit(2)
@@ -81,7 +82,7 @@ async fn test_count_documents() {
     assert_eq!(skip_limit_count, 2, "Should respect both skip and limit");
 
     // Test count with age filter
-    let age_filter_count = User::new_model(&db, None)
+    let age_filter_count = User::new_model(&db)
         .r#where(doc! {
             "name": "test_count_user",
             "age": { "$gt": 2 }
@@ -92,7 +93,7 @@ async fn test_count_documents() {
     assert_eq!(age_filter_count, 2, "Should count only documents matching age filter");
 
     // Clean up
-    User::new_model(&db, None)
+    User::new_model(&db)
         .r#where(doc! {"name": "test_count_user"})
         .all()
         .delete(None)
@@ -104,13 +105,13 @@ async fn test_count_documents() {
 async fn test_upsert() {
     let db = get_db().await;
 
-    User::new_model(&db, None)
+    User::new_model(&db).set_request(true)
         .r#where(doc! {"name":"test_upsert"})
         .upsert()
         .update(doc! {}, None)
         .await
         .unwrap();
-    let user = User::new_model(&db, None)
+    let user = User::new_model(&db)
         .r#where(doc! {"name":"test_upsert"})
         .first(None)
         .await
@@ -119,7 +120,7 @@ async fn test_upsert() {
 
     assert!(user.created_at.is_some());
     assert_eq!(user.name, "test_upsert");
-    User::new_model(&db, None)
+    User::new_model(&db)
         .r#where(doc! {"name":"test_upsert"})
         .all()
         .delete(None)
@@ -140,7 +141,7 @@ async fn save_fill() {
         created_at: None,
     };
 
-    User::new_model(&db, None)
+    User::new_model(&db)
         .fill(user)
         .create(None)
         .await
@@ -150,19 +151,19 @@ async fn save_fill() {
 #[tokio::test]
 async fn save() {
     let db = get_db().await;
-    let mut user_model = User::new_model(&db, None);
+    let mut user_model = User::new_model(&db);
     user_model.name = "Smko".to_string();
     user_model.phone = "123456789".to_string();
     user_model.password = "1234".to_string();
     user_model.create(None).await.unwrap();
-    let user_model = User::new_model(&db, None).distinct("name").await;
+    let user_model = User::new_model(&db).distinct("name").await;
     println!("{:?}", user_model)
 }
 
 #[tokio::test]
 async fn find_one() {
     let db = get_db().await;
-    let user_model = User::new_model(&db, None);
+    let user_model = User::new_model(&db);
 
     let founded = user_model
         .r#where(doc! {"name":"Smko"})
@@ -176,13 +177,13 @@ async fn find_one() {
 #[tokio::test]
 async fn update() {
     let db = get_db().await;
-    let user_model = User::new_model(&db, None);
+    let user_model = User::new_model(&db);
     user_model
         .r#where(doc! {"name":"Smko"})
         .update(doc! {"age":3}, None)
         .await
         .unwrap();
-    let user_model = User::new_model(&db, None);
+    let user_model = User::new_model(&db);
     user_model
         .r#where(doc! {"name":"Smko"})
         .update(doc! {"$inc":{"age":1}}, None)
@@ -192,7 +193,7 @@ async fn update() {
 #[tokio::test]
 async fn delete() {
     let db = get_db().await;
-    let user_model = User::new_model(&db, None);
+    let user_model = User::new_model(&db);
     user_model
         .r#where(doc! {"name":"Smko"})
         .delete(None)
@@ -203,7 +204,7 @@ async fn delete() {
 #[tokio::test]
 async fn find_and_collect() {
     let db = get_db().await;
-    let user_model = User::new_model(&db, None);
+    let user_model = User::new_model(&db);
 
     let users = user_model.get(None).await.unwrap();
 
@@ -219,14 +220,14 @@ async fn transaction_with_session() {
     session.start_transaction().await.unwrap();
 
     // Create a user within the transaction
-    let mut user_model = User::new_model(&db, None);
+    let mut user_model = User::new_model(&db);
     user_model.name = "TransactionUser".to_string();
     user_model.phone = "987654321".to_string();
     user_model.password = "txn_pass".to_string();
     user_model.create(Some(&mut session)).await.unwrap();
 
     // Verify the user exists within the transaction
-    let user_model = User::new_model(&db, None);
+    let user_model = User::new_model(&db);
     let user = user_model
         .r#where(doc! {"name": "TransactionUser"})
         .first(Some(&mut session))
@@ -238,7 +239,7 @@ async fn transaction_with_session() {
     session.commit_transaction().await.unwrap();
 
     // Verify the user exists after commit
-    let user_model = User::new_model(&db, None);
+    let user_model = User::new_model(&db);
     let user = user_model
         .r#where(doc! {"name": "TransactionUser"})
         .first(None)
@@ -246,7 +247,7 @@ async fn transaction_with_session() {
         .unwrap();
     assert!(user.is_some(), "User should exist after commit");
 
-    let user_model = User::new_model(&db, None);
+    let user_model = User::new_model(&db);
     user_model
         .r#where(doc! {"name": "TransactionUser"})
         .delete(None)

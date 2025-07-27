@@ -19,7 +19,7 @@ use std::sync::Arc;
 pub type MongodbResult<T> = Result<T>;
 
 #[derive(Debug, Default, Clone)]
-struct Mongorm {
+struct QueryBuilder {
     pub r#where: Vec<Document>,
     pub all: bool,
     pub upsert: bool,
@@ -46,7 +46,7 @@ where
     #[serde(skip)]
     columns: HashMap<&'a str, ColumnAttr>,
     #[serde(skip)]
-    _mongo: Mongorm,
+    query_builder: QueryBuilder,
 }
 
 impl<'a, T: 'a + Boot> Deref for Model<'a, T> {
@@ -75,7 +75,6 @@ where
 {
     pub fn new(
         db: &Database,
-        req: Option<M::Req>,
         collection_name: &'a str,
         columns: &'a str,
         add_times: bool,
@@ -84,15 +83,21 @@ where
 
         let model = Model {
             inner: Box::<M>::default(),
-            req,
+            req: None,
             db: db.clone(),
             collection_name,
             columns,
             add_times,
-            _mongo: Default::default(),
+            query_builder: Default::default(),
         };
 
         model
+    }
+
+    /// Set Request to model
+    pub fn set_request(mut self, req: M::Req) -> Model<'a, M> {
+        self.req = Some(req);
+        self
     }
 
     /// add lazy column to model
@@ -236,22 +241,22 @@ where
 
     /// Reset all filters
     pub fn reset(mut self) -> Model<'a, M> {
-        self._mongo = Default::default();
+        self.query_builder = Default::default();
         self
     }
     /// Adds a filter condition to the query
     pub fn r#where(mut self, data: Document) -> Model<'a, M> {
-        self._mongo.r#where.push(data);
+        self.query_builder.r#where.push(data);
         self
     }
     /// Sets the number of documents to skip
     pub fn skip(mut self, count: u32) -> Model<'a, M> {
-        self._mongo.skip = count;
+        self.query_builder.skip = count;
         self
     }
     /// Gets distinct values for a field
     pub async fn distinct(&self, name: &str) -> Result<Vec<Bson>> {
-        let whr = &self._mongo.r#where;
+        let whr = &self.query_builder.r#where;
         let filter = if whr.is_empty() {
             doc! {}
         } else {
@@ -262,38 +267,38 @@ where
     }
     /// Sets the maximum number of documents to return
     pub fn limit(mut self, count: u32) -> Model<'a, M> {
-        self._mongo.limit = count;
+        self.query_builder.limit = count;
         self
     }
     /// Sets the sort order
     pub fn sort(mut self, data: Document) -> Model<'a, M> {
-        self._mongo.sort = data;
+        self.query_builder.sort = data;
         self
     }
     /// Sets whether to affect all matching documents (for update/delete)
     pub fn all(mut self) -> Model<'a, M> {
-        self._mongo.all = true;
+        self.query_builder.all = true;
         self
     }
     /// Sets the projection (field selection)
     pub fn select(mut self, data: Document) -> Model<'a, M> {
-        self._mongo.select = Some(data);
+        self.query_builder.select = Some(data);
         self
     }
     /// Sets which fields should be visible (overrides hidden fields)
     pub fn visible(mut self, data: Vec<&str>) -> Model<'a, M> {
-        self._mongo.visible_fields = data.iter().map(|a| a.to_string()).collect();
+        self.query_builder.visible_fields = data.iter().map(|a| a.to_string()).collect();
         self
     }
     /// Sets whether to upsert on update
     pub fn upsert(mut self) -> Model<'a, M> {
-        self._mongo.upsert = true;
+        self.query_builder.upsert = true;
         self
     }
 
     /// Get Documents count with filters
     pub async fn count_documents(self) -> Result<u64> {
-        let whr = &self._mongo.r#where;
+        let whr = &self.query_builder.r#where;
         let collection = self.db.collection::<Document>(self.collection_name);
         let filter = if whr.is_empty() {
             doc! {}
@@ -302,13 +307,13 @@ where
         };
 
         let options = CountOptions::builder()
-            .skip(if self._mongo.skip > 0 {
-                Some(self._mongo.skip as u64)
+            .skip(if self.query_builder.skip > 0 {
+                Some(self.query_builder.skip as u64)
             } else {
                 None
             })
-            .limit(if self._mongo.limit > 0 {
-                Some(self._mongo.limit as u64)
+            .limit(if self.query_builder.limit > 0 {
+                Some(self.query_builder.limit as u64)
             } else {
                 None
             })
@@ -449,7 +454,7 @@ where
             set.insert("updated_at", DateTime::now());
         }
 
-        if self._mongo.upsert {
+        if self.query_builder.upsert {
             if self.add_times {
                 if !data.contains_key("$setOnInsert") {
                     data.insert("$setOnInsert", doc! {});
@@ -462,7 +467,7 @@ where
                 set.insert("created_at", DateTime::now());
             }
         }
-        let whr = &self._mongo.r#where;
+        let whr = &self.query_builder.r#where;
         if whr.is_empty() {
             return Err(Error::from(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
@@ -475,10 +480,10 @@ where
             None => {
                 let r = self.db.collection::<Document>(self.collection_name);
 
-                if self._mongo.all {
+                if self.query_builder.all {
                     let r = r
                         .update_many(filter, data.clone())
-                        .upsert(self._mongo.upsert)
+                        .upsert(self.query_builder.upsert)
                         .await;
                     match r {
                         Ok(old) => {
@@ -492,8 +497,8 @@ where
                 } else {
                     let r = r
                         .find_one_and_update(filter, data.clone())
-                        .upsert(self._mongo.upsert)
-                        .sort(self._mongo.sort.clone())
+                        .upsert(self.query_builder.upsert)
+                        .sort(self.query_builder.sort.clone())
                         .await;
                     match r {
                         Ok(old) => {
@@ -508,10 +513,10 @@ where
             }
             Some(s) => {
                 let r = self.db.collection::<Document>(self.collection_name);
-                if self._mongo.all {
+                if self.query_builder.all {
                     let r = r
                         .update_many(filter, data.clone())
-                        .upsert(self._mongo.upsert)
+                        .upsert(self.query_builder.upsert)
                         .session(&mut *s)
                         .await;
                     match r {
@@ -526,8 +531,8 @@ where
                 } else {
                     let r = r
                         .find_one_and_update(filter, data.clone())
-                        .upsert(self._mongo.upsert)
-                        .sort(self._mongo.sort.clone())
+                        .upsert(self.query_builder.upsert)
+                        .sort(self.query_builder.sort.clone())
                         .session(&mut *s)
                         .await;
                     match r {
@@ -552,7 +557,7 @@ where
     /// # Notes
     /// - Handles both single and multi-document deletes based on `all()` setting
     pub async fn delete(&self, session: Option<&mut ClientSession>) -> Result<Document> {
-        let whr = &self._mongo.r#where;
+        let whr = &self.query_builder.r#where;
         if whr.is_empty() {
             return Err(Error::from(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
@@ -564,7 +569,7 @@ where
         match session {
             None => {
                 let r = self.db.collection::<Document>(self.collection_name);
-                if self._mongo.all {
+                if self.query_builder.all {
                     let r = r.delete_many(filter).await;
                     match r {
                         Ok(old) => {
@@ -578,7 +583,7 @@ where
                 } else {
                     let r = r
                         .find_one_and_delete(filter)
-                        .sort(self._mongo.sort.clone())
+                        .sort(self.query_builder.sort.clone())
                         .await;
                     match r {
                         Ok(old) => {
@@ -593,7 +598,7 @@ where
             }
             Some(s) => {
                 let r = self.db.collection::<Document>(self.collection_name);
-                if self._mongo.all {
+                if self.query_builder.all {
                     let r = r.delete_many(filter).session(&mut *s).await;
                     match r {
                         Ok(old) => {
@@ -607,7 +612,7 @@ where
                 } else {
                     let r = r
                         .find_one_and_delete(filter)
-                        .sort(self._mongo.sort.clone())
+                        .sort(self.query_builder.sort.clone())
                         .session(&mut *s)
                         .await;
                     match r {
@@ -633,7 +638,7 @@ where
     /// - Respects skip/limit/sort/select settings
     /// - Filters out hidden fields unless explicitly made visible
     pub async fn get(&self, session: Option<&mut ClientSession>) -> Result<Vec<M>> {
-        let whr = &self._mongo.r#where;
+        let whr = &self.query_builder.r#where;
         let filter = if whr.is_empty() {
             doc! {}
         } else {
@@ -642,15 +647,15 @@ where
         let hidden_fields = self.hidden_fields();
         let collection = self.db.collection::<Document>(self.collection_name);
         let mut find = collection.find(filter);
-        find = find.sort(self._mongo.sort.clone());
+        find = find.sort(self.query_builder.sort.clone());
 
-        if self._mongo.skip > 0 {
-            find = find.skip(self._mongo.skip as u64);
+        if self.query_builder.skip > 0 {
+            find = find.skip(self.query_builder.skip as u64);
         }
-        if self._mongo.limit > 0 {
-            find = find.limit(self._mongo.limit as i64);
+        if self.query_builder.limit > 0 {
+            find = find.limit(self.query_builder.limit as i64);
         }
-        if let Some(select) = self._mongo.select.clone() {
+        if let Some(select) = self.query_builder.select.clone() {
             find = find.projection(select);
         }
 
@@ -675,7 +680,7 @@ where
 
     /// Gets the first matching document
     pub async fn first(&mut self, session: Option<&mut ClientSession>) -> Result<Option<M>> {
-        self._mongo.limit = 1;
+        self.query_builder.limit = 1;
         let r = self.get(session).await?;
         for item in r {
             return Ok(Some(item));
@@ -713,7 +718,7 @@ where
 
     /// Queries documents and returns raw BSON
     pub async fn get_doc(&self, session: Option<&mut ClientSession>) -> Result<Vec<Document>> {
-        let whr = &self._mongo.r#where;
+        let whr = &self.query_builder.r#where;
         let filter = if whr.is_empty() {
             doc! {}
         } else {
@@ -721,15 +726,15 @@ where
         };
         let collection = self.db.collection::<Document>(self.collection_name);
         let mut find = collection.find(filter);
-        find = find.sort(self._mongo.sort.clone());
+        find = find.sort(self.query_builder.sort.clone());
 
-        if self._mongo.skip > 0 {
-            find = find.skip(self._mongo.skip as u64);
+        if self.query_builder.skip > 0 {
+            find = find.skip(self.query_builder.skip as u64);
         }
-        if self._mongo.limit > 0 {
-            find = find.limit(self._mongo.limit as i64);
+        if self.query_builder.limit > 0 {
+            find = find.limit(self.query_builder.limit as i64);
         }
-        if let Some(select) = self._mongo.select.clone() {
+        if let Some(select) = self.query_builder.select.clone() {
             find = find.projection(select);
         }
 
@@ -757,7 +762,7 @@ where
         &mut self,
         session: Option<&mut ClientSession>,
     ) -> Result<Option<Document>> {
-        self._mongo.limit = 1;
+        self.query_builder.limit = 1;
         let r = self.get_doc(session).await?;
         for item in r {
             return Ok(Some(item));
@@ -795,7 +800,7 @@ where
     fn hidden_fields(&self) -> Vec<String> {
         let mut r = vec![];
         for (name, attr) in &self.columns {
-            if attr.hidden && !self._mongo.visible_fields.contains(&name.to_string()) {
+            if attr.hidden && !self.query_builder.visible_fields.contains(&name.to_string()) {
                 r.push(name.to_string())
             }
         }
