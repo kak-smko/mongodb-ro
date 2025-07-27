@@ -29,7 +29,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-mongodb-ro = "2.0.0"
+mongodb-ro = "2.1.0"
 ```
 
 ## Usage
@@ -117,7 +117,7 @@ async fn save(req:HttpRequest) {
     user_model.name = "Smko".to_string();
     user_model.phone = "123456789".to_string();
     user_model.password = "1234".to_string();
-    user_model.create(None).await.unwrap();
+    user_model.create().await.unwrap();
 }
 ```
 
@@ -132,7 +132,7 @@ async fn save() {
     user_model.name = "Smko".to_string();
     user_model.phone = "123456789".to_string();
     user_model.password = "1234".to_string();
-    user_model.create(None).await.unwrap();
+    user_model.create().await.unwrap();
 }
 ```
 
@@ -147,7 +147,7 @@ async fn find_one() {
     let user = user_model
         .r#where(doc! {"name": "Smko"})
         .visible(vec!["password"])
-        .first(None)
+        .first()
         .await
         .unwrap();
     println!("Found user: {:?}", user);
@@ -163,7 +163,7 @@ async fn update() {
     // Simple update
     user_model
         .r#where(doc! {"name": "Smko"})
-        .update(doc! {"age": 3}, None)
+        .update(doc! {"age": 3})
         .await
         .unwrap();
     
@@ -171,7 +171,7 @@ async fn update() {
     user_model
         .reset()
         .r#where(doc! {"name": "Smko"})
-        .update(doc! {"$inc": {"age": 1}}, None)
+        .update(doc! {"$inc": {"age": 1}})
         .await
         .unwrap();
 }
@@ -185,7 +185,7 @@ async fn delete() {
     user_model
         .r#where(doc! {"name": "Smko"})
         .all()
-        .delete(None)
+        .delete()
         .await
         .unwrap();
 }
@@ -207,12 +207,12 @@ async fn transaction_with_session() {
     user_model.name = "TransactionUser".to_string();
     user_model.phone = "987654321".to_string();
     user_model.password = "txn_pass".to_string();
-    user_model.create(Some(&mut session)).await.unwrap();
+    user_model.create_with_session(&mut session).await.unwrap();
 
     // Verify within transaction
     let user = User::new_model(&db)
         .r#where(doc! {"name": "TransactionUser"})
-        .first(Some(&mut session))
+        .first_with_session(&mut session)
         .await
         .unwrap();
     assert!(user.is_some());
@@ -223,7 +223,7 @@ async fn transaction_with_session() {
     // Cleanup
     User::new_model(&db)
         .r#where(doc! {"name": "TransactionUser"})
-        .delete(None)
+        .delete()
         .await
         .unwrap();
 }
@@ -234,7 +234,7 @@ async fn transaction_with_session() {
 async fn find_and_collect() {
     let db = get_db().await;
     let users = User::new_model(&db)
-        .get(None)
+        .get()
         .await
         .unwrap();
     println!("All users: {:?}", users);

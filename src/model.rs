@@ -2,7 +2,7 @@ use crate::column::ColumnAttr;
 use crate::event::Boot;
 use futures_util::StreamExt;
 use log::error;
-use mongodb::action::EstimatedDocumentCount;
+use mongodb::action::{EstimatedDocumentCount, Find};
 use mongodb::bson::{doc, to_document, Document};
 use mongodb::bson::{Bson, DateTime};
 use mongodb::error::{Error, Result};
@@ -15,20 +15,10 @@ use std::collections::HashMap;
 use std::fmt::Debug;
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
+use crate::query_builder::QueryBuilder;
 
 pub type MongodbResult<T> = Result<T>;
 
-#[derive(Debug, Default, Clone)]
-struct QueryBuilder {
-    pub r#where: Vec<Document>,
-    pub all: bool,
-    pub upsert: bool,
-    pub select: Option<Document>,
-    pub sort: Document,
-    pub skip: u32,
-    pub limit: u32,
-    pub visible_fields: Vec<String>,
-}
 #[derive(Debug, Clone, Serialize)]
 pub struct Model<'a, M>
 where
@@ -296,507 +286,6 @@ where
         self
     }
 
-    /// Get Documents count with filters
-    pub async fn count_documents(self) -> Result<u64> {
-        let whr = &self.query_builder.r#where;
-        let collection = self.db.collection::<Document>(self.collection_name);
-        let filter = if whr.is_empty() {
-            doc! {}
-        } else {
-            doc! { "$and": whr }
-        };
-
-        let options = CountOptions::builder()
-            .skip(if self.query_builder.skip > 0 {
-                Some(self.query_builder.skip as u64)
-            } else {
-                None
-            })
-            .limit(if self.query_builder.limit > 0 {
-                Some(self.query_builder.limit as u64)
-            } else {
-                None
-            })
-            .build();
-
-        collection
-            .count_documents(filter)
-            .with_options(options)
-            .await
-    }
-
-    /// Creates a new document in the collection
-    ///
-    /// # Arguments
-    /// * `session` - Optional MongoDB transaction session
-    ///
-    /// # Notes
-    /// - Automatically adds timestamps if configured
-    pub async fn create(&self, session: Option<&mut ClientSession>) -> Result<InsertOneResult> {
-        let mut data = self.inner_to_doc()?;
-        if data.get_object_id("_id").is_err() {
-            data.remove("_id");
-        }
-        if self.add_times {
-            if !data.contains_key("updated_at") || !data.get_datetime("updated_at").is_ok() {
-                data.insert("updated_at", DateTime::now());
-            }
-            if !data.contains_key("created_at") || !data.get_datetime("created_at").is_ok() {
-                data.insert("created_at", DateTime::now());
-            }
-        }
-        match session {
-            None => {
-                let r = self
-                    .db
-                    .collection(self.collection_name)
-                    .insert_one(data.clone())
-                    .await;
-                if r.is_ok() {
-                    self.finish(&self.req, "create", Document::new(), data, None)
-                        .await;
-                }
-                r
-            }
-            Some(s) => {
-                let r = self
-                    .db
-                    .collection(self.collection_name)
-                    .insert_one(data.clone())
-                    .session(&mut *s)
-                    .await;
-                if r.is_ok() {
-                    self.finish(&self.req, "create", Document::new(), data, Some(s))
-                        .await;
-                }
-                r
-            }
-        }
-    }
-
-    /// Creates a new document from raw BSON
-    pub async fn create_doc(
-        &self,
-        data: Document,
-        session: Option<&mut ClientSession>,
-    ) -> Result<InsertOneResult> {
-        let mut data = data;
-
-        if self.add_times {
-            if !data.contains_key("updated_at") || !data.get_datetime("updated_at").is_ok() {
-                data.insert("updated_at", DateTime::now());
-            }
-            if !data.contains_key("created_at") || !data.get_datetime("created_at").is_ok() {
-                data.insert("created_at", DateTime::now());
-            }
-        }
-        match session {
-            None => {
-                let r = self
-                    .db
-                    .collection(self.collection_name)
-                    .insert_one(data.clone())
-                    .await;
-                if r.is_ok() {
-                    self.finish(&self.req, "create", Document::new(), data, None)
-                        .await;
-                }
-                r
-            }
-            Some(s) => {
-                let r = self
-                    .db
-                    .collection(self.collection_name)
-                    .insert_one(data.clone())
-                    .session(&mut *s)
-                    .await;
-                if r.is_ok() {
-                    self.finish(&self.req, "create", Document::new(), data, Some(s))
-                        .await;
-                }
-                r
-            }
-        }
-    }
-
-    /// Updates documents in the collection
-    ///
-    /// # Arguments
-    /// * `data` - Update operations
-    /// * `session` - Optional MongoDB transaction session
-    ///
-    /// # Notes
-    /// - Automatically adds updated_at timestamp if configured
-    /// - Handles both single and multi-document updates based on `all()` setting
-    /// - Supports upsert if configured
-    pub async fn update(
-        &self,
-        data: Document,
-        session: Option<&mut ClientSession>,
-    ) -> Result<Document> {
-        let mut data = data;
-        let mut is_opt = false;
-        for (a, _) in data.iter() {
-            if a.starts_with("$") {
-                is_opt = true;
-            }
-        }
-
-        self.rename_field(&mut data, is_opt);
-        if !is_opt {
-            data = doc! {"$set":data};
-        }
-        if self.add_times {
-            if !data.contains_key("$set") {
-                data.insert("$set", doc! {});
-            }
-            let set = data.get_mut("$set").unwrap().as_document_mut().unwrap();
-            set.insert("updated_at", DateTime::now());
-        }
-
-        if self.query_builder.upsert {
-            if self.add_times {
-                if !data.contains_key("$setOnInsert") {
-                    data.insert("$setOnInsert", doc! {});
-                }
-                let set = data
-                    .get_mut("$setOnInsert")
-                    .unwrap()
-                    .as_document_mut()
-                    .unwrap();
-                set.insert("created_at", DateTime::now());
-            }
-        }
-        let whr = &self.query_builder.r#where;
-        if whr.is_empty() {
-            return Err(Error::from(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "where not set.",
-            )));
-        }
-        let filter = doc! {"$and":whr};
-
-        match session {
-            None => {
-                let r = self.db.collection::<Document>(self.collection_name);
-
-                if self.query_builder.all {
-                    let r = r
-                        .update_many(filter, data.clone())
-                        .upsert(self.query_builder.upsert)
-                        .await;
-                    match r {
-                        Ok(old) => {
-                            let res = doc! {"modified_count":old.modified_count.to_string()};
-                            self.finish(&self.req, "update_many", res.clone(), data, None)
-                                .await;
-                            Ok(res)
-                        }
-                        Err(e) => Err(e),
-                    }
-                } else {
-                    let r = r
-                        .find_one_and_update(filter, data.clone())
-                        .upsert(self.query_builder.upsert)
-                        .sort(self.query_builder.sort.clone())
-                        .await;
-                    match r {
-                        Ok(old) => {
-                            let res = old.unwrap_or(Document::new());
-                            self.finish(&self.req, "update", res.clone(), data, None)
-                                .await;
-                            Ok(res)
-                        }
-                        Err(e) => Err(e),
-                    }
-                }
-            }
-            Some(s) => {
-                let r = self.db.collection::<Document>(self.collection_name);
-                if self.query_builder.all {
-                    let r = r
-                        .update_many(filter, data.clone())
-                        .upsert(self.query_builder.upsert)
-                        .session(&mut *s)
-                        .await;
-                    match r {
-                        Ok(old) => {
-                            let res = doc! {"modified_count":old.modified_count.to_string()};
-                            self.finish(&self.req, "update_many", res.clone(), data, Some(s))
-                                .await;
-                            Ok(res)
-                        }
-                        Err(e) => Err(e),
-                    }
-                } else {
-                    let r = r
-                        .find_one_and_update(filter, data.clone())
-                        .upsert(self.query_builder.upsert)
-                        .sort(self.query_builder.sort.clone())
-                        .session(&mut *s)
-                        .await;
-                    match r {
-                        Ok(old) => {
-                            let res = old.unwrap_or(Document::new());
-                            self.finish(&self.req, "update", res.clone(), data, Some(s))
-                                .await;
-                            Ok(res)
-                        }
-                        Err(e) => Err(e),
-                    }
-                }
-            }
-        }
-    }
-
-    /// Deletes documents from the collection
-    ///
-    /// # Arguments
-    /// * `session` - Optional MongoDB transaction session
-    ///
-    /// # Notes
-    /// - Handles both single and multi-document deletes based on `all()` setting
-    pub async fn delete(&self, session: Option<&mut ClientSession>) -> Result<Document> {
-        let whr = &self.query_builder.r#where;
-        if whr.is_empty() {
-            return Err(Error::from(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "where not set.",
-            )));
-        }
-        let filter = doc! {"$and":whr};
-
-        match session {
-            None => {
-                let r = self.db.collection::<Document>(self.collection_name);
-                if self.query_builder.all {
-                    let r = r.delete_many(filter).await;
-                    match r {
-                        Ok(old) => {
-                            let res = doc! {"deleted_count":old.deleted_count.to_string()};
-                            self.finish(&self.req, "delete_many", res.clone(), doc! {}, None)
-                                .await;
-                            Ok(res)
-                        }
-                        Err(e) => Err(e),
-                    }
-                } else {
-                    let r = r
-                        .find_one_and_delete(filter)
-                        .sort(self.query_builder.sort.clone())
-                        .await;
-                    match r {
-                        Ok(old) => {
-                            let res = old.unwrap_or(Document::new());
-                            self.finish(&self.req, "delete", res.clone(), doc! {}, None)
-                                .await;
-                            Ok(res)
-                        }
-                        Err(e) => Err(e),
-                    }
-                }
-            }
-            Some(s) => {
-                let r = self.db.collection::<Document>(self.collection_name);
-                if self.query_builder.all {
-                    let r = r.delete_many(filter).session(&mut *s).await;
-                    match r {
-                        Ok(old) => {
-                            let res = doc! {"deleted_count":old.deleted_count.to_string()};
-                            self.finish(&self.req, "delete_many", res.clone(), doc! {}, Some(s))
-                                .await;
-                            Ok(res)
-                        }
-                        Err(e) => Err(e),
-                    }
-                } else {
-                    let r = r
-                        .find_one_and_delete(filter)
-                        .sort(self.query_builder.sort.clone())
-                        .session(&mut *s)
-                        .await;
-                    match r {
-                        Ok(old) => {
-                            let res = old.unwrap_or(Document::new());
-                            self.finish(&self.req, "delete", res.clone(), doc! {}, Some(s))
-                                .await;
-                            Ok(res)
-                        }
-                        Err(e) => Err(e),
-                    }
-                }
-            }
-        }
-    }
-
-    /// Queries documents from the collection
-    ///
-    /// # Arguments
-    /// * `session` - Optional MongoDB transaction session
-    ///
-    /// # Notes
-    /// - Respects skip/limit/sort/select settings
-    /// - Filters out hidden fields unless explicitly made visible
-    pub async fn get(&self, session: Option<&mut ClientSession>) -> Result<Vec<M>> {
-        let whr = &self.query_builder.r#where;
-        let filter = if whr.is_empty() {
-            doc! {}
-        } else {
-            doc! {"$and":whr}
-        };
-        let hidden_fields = self.hidden_fields();
-        let collection = self.db.collection::<Document>(self.collection_name);
-        let mut find = collection.find(filter);
-        find = find.sort(self.query_builder.sort.clone());
-
-        if self.query_builder.skip > 0 {
-            find = find.skip(self.query_builder.skip as u64);
-        }
-        if self.query_builder.limit > 0 {
-            find = find.limit(self.query_builder.limit as i64);
-        }
-        if let Some(select) = self.query_builder.select.clone() {
-            find = find.projection(select);
-        }
-
-        let mut r = vec![];
-        match session {
-            None => {
-                let mut cursor = find.await?;
-                while let Some(d) = cursor.next().await {
-                    r.push(self.clear(self.cast(d?, &self.req), &hidden_fields))
-                }
-                Ok(r)
-            }
-            Some(s) => {
-                let mut cursor = find.session(&mut *s).await?;
-                while let Some(d) = cursor.next(&mut *s).await {
-                    r.push(self.clear(self.cast(d?, &self.req), &hidden_fields))
-                }
-                Ok(r)
-            }
-        }
-    }
-
-    /// Gets the first matching document
-    pub async fn first(&mut self, session: Option<&mut ClientSession>) -> Result<Option<M>> {
-        self.query_builder.limit = 1;
-        let r = self.get(session).await?;
-        for item in r {
-            return Ok(Some(item));
-        }
-        Ok(None)
-    }
-
-    /// Runs an aggregation pipeline
-    pub async fn aggregate(
-        &mut self,
-        pipeline: impl IntoIterator<Item = Document>,
-        session: Option<&mut ClientSession>,
-    ) -> Result<Vec<M>> {
-        let collection = self.db.collection::<Document>(self.collection_name);
-        let res = collection.aggregate(pipeline);
-        let hidden_fields = self.hidden_fields();
-        let mut r = vec![];
-        match session {
-            None => {
-                let mut cursor = res.await?;
-                while let Some(d) = cursor.next().await {
-                    r.push(self.clear(self.cast(d?, &self.req), &hidden_fields))
-                }
-                Ok(r)
-            }
-            Some(s) => {
-                let mut cursor = res.session(&mut *s).await?;
-                while let Some(d) = cursor.next(&mut *s).await {
-                    r.push(self.clear(self.cast(d?, &self.req), &hidden_fields))
-                }
-                Ok(r)
-            }
-        }
-    }
-
-    /// Queries documents and returns raw BSON
-    pub async fn get_doc(&self, session: Option<&mut ClientSession>) -> Result<Vec<Document>> {
-        let whr = &self.query_builder.r#where;
-        let filter = if whr.is_empty() {
-            doc! {}
-        } else {
-            doc! {"$and":whr}
-        };
-        let collection = self.db.collection::<Document>(self.collection_name);
-        let mut find = collection.find(filter);
-        find = find.sort(self.query_builder.sort.clone());
-
-        if self.query_builder.skip > 0 {
-            find = find.skip(self.query_builder.skip as u64);
-        }
-        if self.query_builder.limit > 0 {
-            find = find.limit(self.query_builder.limit as i64);
-        }
-        if let Some(select) = self.query_builder.select.clone() {
-            find = find.projection(select);
-        }
-
-        let mut r = vec![];
-        match session {
-            None => {
-                let mut cursor = find.await?;
-                while let Some(d) = cursor.next().await {
-                    r.push(self.cast(d?, &self.req))
-                }
-                Ok(r)
-            }
-            Some(s) => {
-                let mut cursor = find.session(&mut *s).await?;
-                while let Some(d) = cursor.next(&mut *s).await {
-                    r.push(self.cast(d?, &self.req))
-                }
-                Ok(r)
-            }
-        }
-    }
-
-    /// Queries documents and returns first raw BSON
-    pub async fn first_doc(
-        &mut self,
-        session: Option<&mut ClientSession>,
-    ) -> Result<Option<Document>> {
-        self.query_builder.limit = 1;
-        let r = self.get_doc(session).await?;
-        for item in r {
-            return Ok(Some(item));
-        }
-        Ok(None)
-    }
-
-    /// Runs an aggregation pipeline and returns raw BSON
-    pub async fn aggregate_doc(
-        &mut self,
-        pipeline: impl IntoIterator<Item = Document>,
-        session: Option<&mut ClientSession>,
-    ) -> Result<Vec<Document>> {
-        let collection = self.db.collection::<Document>(self.collection_name);
-        let res = collection.aggregate(pipeline);
-        let mut r = vec![];
-        match session {
-            None => {
-                let mut cursor = res.await?;
-                while let Some(d) = cursor.next().await {
-                    r.push(self.cast(d?, &self.req))
-                }
-                Ok(r)
-            }
-            Some(s) => {
-                let mut cursor = res.session(&mut *s).await?;
-                while let Some(d) = cursor.next(&mut *s).await {
-                    r.push(self.cast(d?, &self.req))
-                }
-                Ok(r)
-            }
-        }
-    }
-
     fn hidden_fields(&self) -> Vec<String> {
         let mut r = vec![];
         for (name, attr) in &self.columns {
@@ -883,4 +372,616 @@ where
         *self.inner = inner;
         self
     }
+}
+
+
+impl <'a,M> Model<'a, M>
+where
+    M: Boot,
+    M: Default,
+    M: Serialize,
+    M: DeserializeOwned,
+    M: Send,
+    M: Sync,
+    M: Unpin, {
+    /// Get Documents count with filters
+    pub async fn count_documents(self) -> Result<u64> {
+        let whr = &self.query_builder.r#where;
+        let collection = self.db.collection::<Document>(self.collection_name);
+        let filter = if whr.is_empty() {
+            doc! {}
+        } else {
+            doc! { "$and": whr }
+        };
+
+        let options = CountOptions::builder()
+            .skip(if self.query_builder.skip > 0 {
+                Some(self.query_builder.skip as u64)
+            } else {
+                None
+            })
+            .limit(if self.query_builder.limit > 0 {
+                Some(self.query_builder.limit as u64)
+            } else {
+                None
+            })
+            .build();
+
+        collection
+            .count_documents(filter)
+            .with_options(options)
+            .await
+    }
+
+    /// Get Documents count with filters and session
+    pub async fn count_documents_with_session(self,session:&mut ClientSession) -> Result<u64> {
+        let whr = &self.query_builder.r#where;
+        let collection = self.db.collection::<Document>(self.collection_name);
+        let filter = if whr.is_empty() {
+            doc! {}
+        } else {
+            doc! { "$and": whr }
+        };
+
+        let options = CountOptions::builder()
+            .skip(if self.query_builder.skip > 0 {
+                Some(self.query_builder.skip as u64)
+            } else {
+                None
+            })
+            .limit(if self.query_builder.limit > 0 {
+                Some(self.query_builder.limit as u64)
+            } else {
+                None
+            })
+            .build();
+
+        collection
+            .count_documents(filter)
+            .with_options(options)
+            .session(session)
+            .await
+    }
+
+    fn add_times_to_data(&self,data:Document) -> Document {
+        let mut data = data;
+        if data.get_object_id("_id").is_err() {
+            data.remove("_id");
+        }
+        if self.add_times {
+            if !data.contains_key("updated_at") || !data.get_datetime("updated_at").is_ok() {
+                data.insert("updated_at", DateTime::now());
+            }
+            if !data.contains_key("created_at") || !data.get_datetime("created_at").is_ok() {
+                data.insert("created_at", DateTime::now());
+            }
+        }
+        data
+    }
+    /// Creates a new document in the collection
+    ///
+    /// # Notes
+    /// - Automatically adds timestamps if configured
+    pub async fn create(&self) -> Result<InsertOneResult> {
+        let data = self.add_times_to_data(self.inner_to_doc()?);
+
+        let r = self
+            .db
+            .collection(self.collection_name)
+            .insert_one(data.clone())
+            .await;
+        if r.is_ok() {
+            self.finish(&self.req, "create", Document::new(), data, None)
+                .await;
+        }
+        r
+    }
+
+    /// Creates a new document in the collection wit session
+    ///
+    /// # Arguments
+    /// * `session` -  MongoDB transaction session
+    ///
+    /// # Notes
+    /// - Automatically adds timestamps if configured
+    pub async fn create_with_session(&self, session:&mut ClientSession) -> Result<InsertOneResult> {
+        let data = self.add_times_to_data(self.inner_to_doc()?);
+        let r = self
+            .db
+            .collection(self.collection_name)
+            .insert_one(data.clone())
+            .session(&mut *session)
+            .await;
+        if r.is_ok() {
+            self.finish(&self.req, "create", Document::new(), data, Some(session))
+                .await;
+        }
+        r
+    }
+
+    /// Creates a new document from raw BSON
+    pub async fn create_doc(
+        &self,
+        data: Document
+    ) -> Result<InsertOneResult> {
+        let data = self.add_times_to_data(data);
+
+        let r = self
+            .db
+            .collection(self.collection_name)
+            .insert_one(data.clone())
+            .await;
+        if r.is_ok() {
+            self.finish(&self.req, "create", Document::new(), data, None)
+                .await;
+        }
+        r
+    }
+
+    /// Creates a new document from raw BSON with session
+    pub async fn create_doc_with_session(
+        &self,
+        data: Document,
+        session: &mut ClientSession,
+    ) -> Result<InsertOneResult> {
+        let data = self.add_times_to_data(data);
+
+        let r = self
+            .db
+            .collection(self.collection_name)
+            .insert_one(data.clone())
+            .session(&mut *session)
+            .await;
+        if r.is_ok() {
+            self.finish(&self.req, "create", Document::new(), data, Some(session))
+                .await;
+        }
+        r
+    }
+
+    fn prepare_update(&self, data: Document) -> Result<(Document, Document)> {
+        let mut data = data;
+        let mut is_opt = false;
+        for (a, _) in data.iter() {
+            if a.starts_with("$") {
+                is_opt = true;
+            }
+        }
+
+        self.rename_field(&mut data, is_opt);
+        if !is_opt {
+            data = doc! {"$set":data};
+        }
+        if self.add_times {
+            if !data.contains_key("$set") {
+                data.insert("$set", doc! {});
+            }
+            let set = data.get_mut("$set").unwrap().as_document_mut().unwrap();
+            set.insert("updated_at", DateTime::now());
+        }
+
+        if self.query_builder.upsert {
+            if self.add_times {
+                if !data.contains_key("$setOnInsert") {
+                    data.insert("$setOnInsert", doc! {});
+                }
+                let set = data
+                    .get_mut("$setOnInsert")
+                    .unwrap()
+                    .as_document_mut()
+                    .unwrap();
+                set.insert("created_at", DateTime::now());
+            }
+        }
+        let whr = &self.query_builder.r#where;
+        if whr.is_empty() {
+            return Err(Error::from(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "where not set.",
+            )));
+        }
+        let filter = doc! {"$and":whr};
+        Ok((data,filter))
+    }
+    /// Updates documents in the collection
+    ///
+    /// # Arguments
+    /// * `data` - Update operations
+    ///
+    /// # Notes
+    /// - Automatically adds updated_at timestamp if configured
+    /// - Handles both single and multi-document updates based on `all()` setting
+    /// - Supports upsert if configured
+    pub async fn update(
+        &self,
+        data: Document
+    ) -> Result<Document> {
+        let (data,filter)=self.prepare_update(data)?;
+
+        let r = self.db.collection::<Document>(self.collection_name);
+
+        if self.query_builder.all {
+            let r = r
+                .update_many(filter, data.clone())
+                .upsert(self.query_builder.upsert)
+                .await;
+            match r {
+                Ok(old) => {
+                    let res = doc! {"modified_count":old.modified_count.to_string()};
+                    self.finish(&self.req, "update_many", res.clone(), data, None)
+                        .await;
+                    Ok(res)
+                }
+                Err(e) => Err(e),
+            }
+        } else {
+            let r = r
+                .find_one_and_update(filter, data.clone())
+                .upsert(self.query_builder.upsert)
+                .sort(self.query_builder.sort.clone())
+                .await;
+            match r {
+                Ok(old) => {
+                    let res = old.unwrap_or(Document::new());
+                    self.finish(&self.req, "update", res.clone(), data, None)
+                        .await;
+                    Ok(res)
+                }
+                Err(e) => Err(e),
+            }
+        }
+    }
+
+    /// Updates documents in the collection with session
+    ///
+    /// # Arguments
+    /// * `data` - Update operations
+    /// * `session` - MongoDB transaction session
+    ///
+    /// # Notes
+    /// - Automatically adds updated_at timestamp if configured
+    /// - Handles both single and multi-document updates based on `all()` setting
+    /// - Supports upsert if configured
+    pub async fn update_with_session(
+        &self,
+        data: Document,
+        session: &mut ClientSession,
+    ) -> Result<Document> {
+        let (data,filter)=self.prepare_update(data)?;
+
+        let r = self.db.collection::<Document>(self.collection_name);
+        if self.query_builder.all {
+            let r = r
+                .update_many(filter, data.clone())
+                .upsert(self.query_builder.upsert)
+                .session(&mut *session)
+                .await;
+            match r {
+                Ok(old) => {
+                    let res = doc! {"modified_count":old.modified_count.to_string()};
+                    self.finish(&self.req, "update_many", res.clone(), data, Some(session))
+                        .await;
+                    Ok(res)
+                }
+                Err(e) => Err(e),
+            }
+        } else {
+            let r = r
+                .find_one_and_update(filter, data.clone())
+                .upsert(self.query_builder.upsert)
+                .sort(self.query_builder.sort.clone())
+                .session(&mut *session)
+                .await;
+            match r {
+                Ok(old) => {
+                    let res = old.unwrap_or(Document::new());
+                    self.finish(&self.req, "update", res.clone(), data, Some(session))
+                        .await;
+                    Ok(res)
+                }
+                Err(e) => Err(e),
+            }
+        }
+    }
+
+    /// Deletes documents from the collection
+    ///
+    ///
+    /// # Notes
+    /// - Handles both single and multi-document deletes based on `all()` setting
+    pub async fn delete(&self) -> Result<Document> {
+        let whr = &self.query_builder.r#where;
+        if whr.is_empty() {
+            return Err(Error::from(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "where not set.",
+            )));
+        }
+        let filter = doc! {"$and":whr};
+
+        let r = self.db.collection::<Document>(self.collection_name);
+        if self.query_builder.all {
+            let r = r.delete_many(filter).await;
+            match r {
+                Ok(old) => {
+                    let res = doc! {"deleted_count":old.deleted_count.to_string()};
+                    self.finish(&self.req, "delete_many", res.clone(), doc! {}, None)
+                        .await;
+                    Ok(res)
+                }
+                Err(e) => Err(e),
+            }
+        } else {
+            let r = r
+                .find_one_and_delete(filter)
+                .sort(self.query_builder.sort.clone())
+                .await;
+            match r {
+                Ok(old) => {
+                    let res = old.unwrap_or(Document::new());
+                    self.finish(&self.req, "delete", res.clone(), doc! {}, None)
+                        .await;
+                    Ok(res)
+                }
+                Err(e) => Err(e),
+            }
+        }
+    }
+
+    /// Deletes documents from the collection with session
+    ///
+    /// # Arguments
+    /// * `session` - Optional MongoDB transaction session
+    ///
+    /// # Notes
+    /// - Handles both single and multi-document deletes based on `all()` setting
+    pub async fn delete_with_session(&self, session: &mut ClientSession) -> Result<Document> {
+        let whr = &self.query_builder.r#where;
+        if whr.is_empty() {
+            return Err(Error::from(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "where not set.",
+            )));
+        }
+        let filter = doc! {"$and":whr};
+
+
+            let r = self.db.collection::<Document>(self.collection_name);
+            if self.query_builder.all {
+                let r = r.delete_many(filter).session(&mut *session).await;
+                match r {
+                    Ok(old) => {
+                        let res = doc! {"deleted_count":old.deleted_count.to_string()};
+                        self.finish(&self.req, "delete_many", res.clone(), doc! {}, Some(session))
+                            .await;
+                        Ok(res)
+                    }
+                    Err(e) => Err(e),
+                }
+            } else {
+                let r = r
+                    .find_one_and_delete(filter)
+                    .sort(self.query_builder.sort.clone())
+                    .session(&mut *session)
+                    .await;
+                match r {
+                    Ok(old) => {
+                        let res = old.unwrap_or(Document::new());
+                        self.finish(&self.req, "delete", res.clone(), doc! {}, Some(session))
+                            .await;
+                        Ok(res)
+                    }
+                    Err(e) => Err(e),
+                }
+            }
+
+    }
+    fn prepare_get(&self) -> (Document, Vec<String>) {
+        let whr = &self.query_builder.r#where;
+        let filter = if whr.is_empty() { doc! {} } else { doc! {"$and":whr} };
+        let hidden_fields = self.hidden_fields();
+        (filter, hidden_fields)
+    }
+
+    fn prepare_find<'b>(&self, mut find: Find<'b,Document>) -> Find<'b,Document> {
+        find = find.sort(self.query_builder.sort.clone());
+
+        if self.query_builder.skip > 0 {
+            find = find.skip(self.query_builder.skip as u64);
+        }
+        if self.query_builder.limit > 0 {
+            find = find.limit(self.query_builder.limit as i64);
+        }
+        if let Some(select) = self.query_builder.select.clone() {
+            find = find.projection(select);
+        }
+        find
+    }
+
+    /// Queries documents from the collection
+    ///
+    ///
+    /// # Notes
+    /// - Respects skip/limit/sort/select settings
+    /// - Filters out hidden fields unless explicitly made visible
+    pub async fn get(&self) -> Result<Vec<M>> {
+        let (filter,hidden_fields)=self.prepare_get();
+        let collection = self.db.collection::<Document>(self.collection_name);
+        let mut find = collection.find(filter);
+        find=self.prepare_find(find);
+
+        let mut r = vec![];
+        let mut cursor = find.await?;
+        while let Some(d) = cursor.next().await {
+            r.push(self.clear(self.cast(d?, &self.req), &hidden_fields))
+        }
+        Ok(r)
+    }
+
+    /// Queries documents from the collection with session
+    ///
+    /// # Arguments
+    /// * `session` - Optional MongoDB transaction session
+    ///
+    /// # Notes
+    /// - Respects skip/limit/sort/select settings
+    /// - Filters out hidden fields unless explicitly made visible
+    pub async fn get_with_session(&self, session:&mut ClientSession) -> Result<Vec<M>> {
+        let (filter,hidden_fields)=self.prepare_get();
+        let collection = self.db.collection::<Document>(self.collection_name);
+        let mut find = collection.find(filter);
+        find=self.prepare_find(find);
+
+        let mut r = vec![];
+        let mut cursor = find.session(&mut *session).await?;
+        while let Some(d) = cursor.next(&mut *session).await {
+            r.push(self.clear(self.cast(d?, &self.req), &hidden_fields))
+        }
+        Ok(r)
+    }
+
+    /// Gets the first matching document
+    pub async fn first(&mut self) -> Result<Option<M>> {
+        self.query_builder.limit = 1;
+        let r = self.get().await?;
+        for item in r {
+            return Ok(Some(item));
+        }
+        Ok(None)
+    }
+    /// Gets the first matching document with session
+    pub async fn first_with_session(&mut self, session:&mut ClientSession) -> Result<Option<M>> {
+        self.query_builder.limit = 1;
+        let r = self.get_with_session(session).await?;
+        for item in r {
+            return Ok(Some(item));
+        }
+        Ok(None)
+    }
+
+    /// Runs an aggregation pipeline
+    pub async fn aggregate(
+        &mut self,
+        pipeline: impl IntoIterator<Item = Document>
+    ) -> Result<Vec<M>> {
+        let collection = self.db.collection::<Document>(self.collection_name);
+        let res = collection.aggregate(pipeline);
+        let hidden_fields = self.hidden_fields();
+        let mut r = vec![];
+        let mut cursor = res.await?;
+        while let Some(d) = cursor.next().await {
+            r.push(self.clear(self.cast(d?, &self.req), &hidden_fields))
+        }
+        Ok(r)
+    }
+
+    /// Runs an aggregation pipeline with session
+    pub async fn aggregate_with_session(
+        &mut self,
+        pipeline: impl IntoIterator<Item = Document>,
+        session: &mut ClientSession,
+    ) -> Result<Vec<M>> {
+        let collection = self.db.collection::<Document>(self.collection_name);
+        let res = collection.aggregate(pipeline);
+        let hidden_fields = self.hidden_fields();
+        let mut r = vec![];
+        let mut cursor = res.session(&mut *session).await?;
+        while let Some(d) = cursor.next(&mut *session).await {
+            r.push(self.clear(self.cast(d?, &self.req), &hidden_fields))
+        }
+        Ok(r)
+    }
+
+    /// Queries documents from the collection
+    ///
+    ///
+    /// # Notes
+    /// - Respects skip/limit/sort/select settings
+    /// - Filters out hidden fields unless explicitly made visible
+    pub async fn get_doc(&self) -> Result<Vec<Document>> {
+        let (filter,_)=self.prepare_get();
+        let collection = self.db.collection::<Document>(self.collection_name);
+        let mut find = collection.find(filter);
+        find=self.prepare_find(find);
+
+        let mut r = vec![];
+        let mut cursor = find.await?;
+        while let Some(d) = cursor.next().await {
+            r.push(self.cast(d?, &self.req))
+        }
+        Ok(r)
+    }
+
+    /// Queries documents from the collection with session
+    ///
+    /// # Arguments
+    /// * `session` - Optional MongoDB transaction session
+    ///
+    /// # Notes
+    /// - Respects skip/limit/sort/select settings
+    /// - Filters out hidden fields unless explicitly made visible
+    pub async fn get_doc_with_session(&self, session:&mut ClientSession) -> Result<Vec<Document>> {
+        let (filter,_)=self.prepare_get();
+        let collection = self.db.collection::<Document>(self.collection_name);
+        let mut find = collection.find(filter);
+        find=self.prepare_find(find);
+
+        let mut r = vec![];
+        let mut cursor = find.session(&mut *session).await?;
+        while let Some(d) = cursor.next(&mut *session).await {
+            r.push(self.cast(d?, &self.req))
+        }
+        Ok(r)
+    }
+
+    /// Gets the first matching document
+    pub async fn first_doc(&mut self) -> Result<Option<Document>> {
+        self.query_builder.limit = 1;
+        let r = self.get_doc().await?;
+        for item in r {
+            return Ok(Some(item));
+        }
+        Ok(None)
+    }
+    /// Gets the first matching document with session
+    pub async fn first_doc_with_session(&mut self, session:&mut ClientSession) -> Result<Option<Document>> {
+        self.query_builder.limit = 1;
+        let r = self.get_doc_with_session(session).await?;
+        for item in r {
+            return Ok(Some(item));
+        }
+        Ok(None)
+    }
+
+    /// Runs an aggregation pipeline
+    pub async fn aggregate_doc(
+        &mut self,
+        pipeline: impl IntoIterator<Item = Document>
+    ) -> Result<Vec<Document>> {
+        let collection = self.db.collection::<Document>(self.collection_name);
+        let res = collection.aggregate(pipeline);
+        let mut r = vec![];
+        let mut cursor = res.await?;
+        while let Some(d) = cursor.next().await {
+            r.push(self.cast(d?, &self.req))
+        }
+        Ok(r)
+    }
+
+    /// Runs an aggregation pipeline with session
+    pub async fn aggregate_doc_with_session(
+        &mut self,
+        pipeline: impl IntoIterator<Item = Document>,
+        session: &mut ClientSession,
+    ) -> Result<Vec<Document>> {
+        let collection = self.db.collection::<Document>(self.collection_name);
+        let res = collection.aggregate(pipeline);
+        let mut r = vec![];
+        let mut cursor = res.session(&mut *session).await?;
+        while let Some(d) = cursor.next(&mut *session).await {
+            r.push(self.cast(d?, &self.req))
+        }
+        Ok(r)
+    }
+
 }

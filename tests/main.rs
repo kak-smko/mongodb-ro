@@ -32,7 +32,7 @@ async fn test_count_documents() {
     User::new_model(&db)
         .r#where(doc! {"name": "test_count_user"})
         .all()
-        .delete(None)
+        .delete()
         .await
         .unwrap();
 
@@ -42,7 +42,7 @@ async fn test_count_documents() {
         user.name = "test_count_user".to_string();
         user.phone = format!("12345678{}", i);
         user.age = i as u8;
-        user.create(None).await.unwrap();
+        user.create().await.unwrap();
     }
 
     // Test basic count
@@ -96,7 +96,7 @@ async fn test_count_documents() {
     User::new_model(&db)
         .r#where(doc! {"name": "test_count_user"})
         .all()
-        .delete(None)
+        .delete()
         .await
         .unwrap();
 }
@@ -108,12 +108,12 @@ async fn test_upsert() {
     User::new_model(&db).set_request(true)
         .r#where(doc! {"name":"test_upsert"})
         .upsert()
-        .update(doc! {}, None)
+        .update(doc! {})
         .await
         .unwrap();
     let user = User::new_model(&db)
         .r#where(doc! {"name":"test_upsert"})
-        .first(None)
+        .first()
         .await
         .unwrap()
         .unwrap();
@@ -123,7 +123,7 @@ async fn test_upsert() {
     User::new_model(&db)
         .r#where(doc! {"name":"test_upsert"})
         .all()
-        .delete(None)
+        .delete()
         .await
         .unwrap();
 }
@@ -143,7 +143,7 @@ async fn save_fill() {
 
     User::new_model(&db)
         .fill(user)
-        .create(None)
+        .create()
         .await
         .unwrap();
 }
@@ -155,7 +155,7 @@ async fn save() {
     user_model.name = "Smko".to_string();
     user_model.phone = "123456789".to_string();
     user_model.password = "1234".to_string();
-    user_model.create(None).await.unwrap();
+    user_model.create().await.unwrap();
     let user_model = User::new_model(&db).distinct("name").await;
     println!("{:?}", user_model)
 }
@@ -168,7 +168,7 @@ async fn find_one() {
     let founded = user_model
         .r#where(doc! {"name":"Smko"})
         .visible(vec!["password"])
-        .first(None)
+        .first()
         .await
         .unwrap();
     println!("The founded object {:?} ", founded);
@@ -180,13 +180,13 @@ async fn update() {
     let user_model = User::new_model(&db);
     user_model
         .r#where(doc! {"name":"Smko"})
-        .update(doc! {"age":3}, None)
+        .update(doc! {"age":3})
         .await
         .unwrap();
     let user_model = User::new_model(&db);
     user_model
         .r#where(doc! {"name":"Smko"})
-        .update(doc! {"$inc":{"age":1}}, None)
+        .update(doc! {"$inc":{"age":1}})
         .await
         .unwrap();
 }
@@ -196,7 +196,7 @@ async fn delete() {
     let user_model = User::new_model(&db);
     user_model
         .r#where(doc! {"name":"Smko"})
-        .delete(None)
+        .delete()
         .await
         .unwrap();
 }
@@ -206,7 +206,7 @@ async fn find_and_collect() {
     let db = get_db().await;
     let user_model = User::new_model(&db);
 
-    let users = user_model.get(None).await.unwrap();
+    let users = user_model.get().await.unwrap();
 
     println!("The users {users:?} ")
 }
@@ -224,13 +224,13 @@ async fn transaction_with_session() {
     user_model.name = "TransactionUser".to_string();
     user_model.phone = "987654321".to_string();
     user_model.password = "txn_pass".to_string();
-    user_model.create(Some(&mut session)).await.unwrap();
+    user_model.create_with_session(&mut session).await.unwrap();
 
     // Verify the user exists within the transaction
     let user_model = User::new_model(&db);
     let user = user_model
         .r#where(doc! {"name": "TransactionUser"})
-        .first(Some(&mut session))
+        .first_with_session(&mut session)
         .await
         .unwrap();
     assert!(user.is_some(), "User should exist within transaction");
@@ -242,7 +242,7 @@ async fn transaction_with_session() {
     let user_model = User::new_model(&db);
     let user = user_model
         .r#where(doc! {"name": "TransactionUser"})
-        .first(None)
+        .first()
         .await
         .unwrap();
     assert!(user.is_some(), "User should exist after commit");
@@ -250,7 +250,7 @@ async fn transaction_with_session() {
     let user_model = User::new_model(&db);
     user_model
         .r#where(doc! {"name": "TransactionUser"})
-        .delete(None)
+        .delete()
         .await
         .unwrap();
 }

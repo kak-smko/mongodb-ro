@@ -11,6 +11,7 @@
 pub mod model;
 mod column;
 pub mod event;
+mod query_builder;
 
 pub use mongodb_ro_derive::*;
 
