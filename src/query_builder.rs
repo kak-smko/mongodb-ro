@@ -9,5 +9,6 @@ pub(crate) struct QueryBuilder {
     pub sort: Document,
     pub skip: u32,
     pub limit: u32,
+    pub batch_size: u32,
     pub visible_fields: Vec<String>,
 }

@@ -1,5 +1,6 @@
 use crate::column::ColumnAttr;
 use crate::event::Boot;
+use crate::query_builder::QueryBuilder;
 use futures_util::StreamExt;
 use log::error;
 use mongodb::action::{EstimatedDocumentCount, Find};
@@ -8,14 +9,13 @@ use mongodb::bson::{Bson, DateTime};
 use mongodb::error::{Error, Result};
 use mongodb::options::{CountOptions, IndexOptions};
 use mongodb::results::InsertOneResult;
-use mongodb::{bson, ClientSession, Collection, Database, IndexModel};
+use mongodb::{bson, ClientSession, Collection, Cursor, Database, IndexModel, SessionCursor};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
-use crate::query_builder::QueryBuilder;
 
 pub type MongodbResult<T> = Result<T>;
 
@@ -260,6 +260,11 @@ where
         self.query_builder.limit = count;
         self
     }
+    /// The number of documents the server should return per cursor batch.
+    pub fn batch_size(mut self, value: u32) -> Model<'a, M> {
+        self.query_builder.batch_size = value;
+        self
+    }
     /// Sets the sort order
     pub fn sort(mut self, data: Document) -> Model<'a, M> {
         self.query_builder.sort = data;
@@ -289,7 +294,12 @@ where
     fn hidden_fields(&self) -> Vec<String> {
         let mut r = vec![];
         for (name, attr) in &self.columns {
-            if attr.hidden && !self.query_builder.visible_fields.contains(&name.to_string()) {
+            if attr.hidden
+                && !self
+                    .query_builder
+                    .visible_fields
+                    .contains(&name.to_string())
+            {
                 r.push(name.to_string())
             }
         }
@@ -374,8 +384,7 @@ where
     }
 }
 
-
-impl <'a,M> Model<'a, M>
+impl<'a, M> Model<'a, M>
 where
     M: Boot,
     M: Default,
@@ -383,7 +392,8 @@ where
     M: DeserializeOwned,
     M: Send,
     M: Sync,
-    M: Unpin, {
+    M: Unpin,
+{
     /// Get Documents count with filters
     pub async fn count_documents(self) -> Result<u64> {
         let whr = &self.query_builder.r#where;
@@ -414,7 +424,7 @@ where
     }
 
     /// Get Documents count with filters and session
-    pub async fn count_documents_with_session(self,session:&mut ClientSession) -> Result<u64> {
+    pub async fn count_documents_with_session(self, session: &mut ClientSession) -> Result<u64> {
         let whr = &self.query_builder.r#where;
         let collection = self.db.collection::<Document>(self.collection_name);
         let filter = if whr.is_empty() {
@@ -443,7 +453,7 @@ where
             .await
     }
 
-    fn add_times_to_data(&self,data:Document) -> Document {
+    fn add_times_to_data(&self, data: Document) -> Document {
         let mut data = data;
         if data.get_object_id("_id").is_err() {
             data.remove("_id");
@@ -484,7 +494,10 @@ where
     ///
     /// # Notes
     /// - Automatically adds timestamps if configured
-    pub async fn create_with_session(&self, session:&mut ClientSession) -> Result<InsertOneResult> {
+    pub async fn create_with_session(
+        &self,
+        session: &mut ClientSession,
+    ) -> Result<InsertOneResult> {
         let data = self.add_times_to_data(self.inner_to_doc()?);
         let r = self
             .db
@@ -500,10 +513,7 @@ where
     }
 
     /// Creates a new document from raw BSON
-    pub async fn create_doc(
-        &self,
-        data: Document
-    ) -> Result<InsertOneResult> {
+    pub async fn create_doc(&self, data: Document) -> Result<InsertOneResult> {
         let data = self.add_times_to_data(data);
 
         let r = self
@@ -581,7 +591,7 @@ where
             )));
         }
         let filter = doc! {"$and":whr};
-        Ok((data,filter))
+        Ok((data, filter))
     }
     /// Updates documents in the collection
     ///
@@ -592,11 +602,8 @@ where
     /// - Automatically adds updated_at timestamp if configured
     /// - Handles both single and multi-document updates based on `all()` setting
     /// - Supports upsert if configured
-    pub async fn update(
-        &self,
-        data: Document
-    ) -> Result<Document> {
-        let (data,filter)=self.prepare_update(data)?;
+    pub async fn update(&self, data: Document) -> Result<Document> {
+        let (data, filter) = self.prepare_update(data)?;
 
         let r = self.db.collection::<Document>(self.collection_name);
 
@@ -647,7 +654,7 @@ where
         data: Document,
         session: &mut ClientSession,
     ) -> Result<Document> {
-        let (data,filter)=self.prepare_update(data)?;
+        let (data, filter) = self.prepare_update(data)?;
 
         let r = self.db.collection::<Document>(self.collection_name);
         if self.query_builder.all {
@@ -745,45 +752,53 @@ where
         }
         let filter = doc! {"$and":whr};
 
-
-            let r = self.db.collection::<Document>(self.collection_name);
-            if self.query_builder.all {
-                let r = r.delete_many(filter).session(&mut *session).await;
-                match r {
-                    Ok(old) => {
-                        let res = doc! {"deleted_count":old.deleted_count.to_string()};
-                        self.finish(&self.req, "delete_many", res.clone(), doc! {}, Some(session))
-                            .await;
-                        Ok(res)
-                    }
-                    Err(e) => Err(e),
-                }
-            } else {
-                let r = r
-                    .find_one_and_delete(filter)
-                    .sort(self.query_builder.sort.clone())
-                    .session(&mut *session)
+        let r = self.db.collection::<Document>(self.collection_name);
+        if self.query_builder.all {
+            let r = r.delete_many(filter).session(&mut *session).await;
+            match r {
+                Ok(old) => {
+                    let res = doc! {"deleted_count":old.deleted_count.to_string()};
+                    self.finish(
+                        &self.req,
+                        "delete_many",
+                        res.clone(),
+                        doc! {},
+                        Some(session),
+                    )
                     .await;
-                match r {
-                    Ok(old) => {
-                        let res = old.unwrap_or(Document::new());
-                        self.finish(&self.req, "delete", res.clone(), doc! {}, Some(session))
-                            .await;
-                        Ok(res)
-                    }
-                    Err(e) => Err(e),
+                    Ok(res)
                 }
+                Err(e) => Err(e),
             }
-
+        } else {
+            let r = r
+                .find_one_and_delete(filter)
+                .sort(self.query_builder.sort.clone())
+                .session(&mut *session)
+                .await;
+            match r {
+                Ok(old) => {
+                    let res = old.unwrap_or(Document::new());
+                    self.finish(&self.req, "delete", res.clone(), doc! {}, Some(session))
+                        .await;
+                    Ok(res)
+                }
+                Err(e) => Err(e),
+            }
+        }
     }
     fn prepare_get(&self) -> (Document, Vec<String>) {
         let whr = &self.query_builder.r#where;
-        let filter = if whr.is_empty() { doc! {} } else { doc! {"$and":whr} };
+        let filter = if whr.is_empty() {
+            doc! {}
+        } else {
+            doc! {"$and":whr}
+        };
         let hidden_fields = self.hidden_fields();
         (filter, hidden_fields)
     }
 
-    fn prepare_find<'b>(&self, mut find: Find<'b,Document>) -> Find<'b,Document> {
+    fn prepare_find<'b>(&self, mut find: Find<'b, Document>) -> Find<'b, Document> {
         find = find.sort(self.query_builder.sort.clone());
 
         if self.query_builder.skip > 0 {
@@ -791,6 +806,9 @@ where
         }
         if self.query_builder.limit > 0 {
             find = find.limit(self.query_builder.limit as i64);
+        }
+        if self.query_builder.batch_size > 0 {
+            find = find.batch_size(self.query_builder.batch_size);
         }
         if let Some(select) = self.query_builder.select.clone() {
             find = find.projection(select);
@@ -805,10 +823,10 @@ where
     /// - Respects skip/limit/sort/select settings
     /// - Filters out hidden fields unless explicitly made visible
     pub async fn get(&self) -> Result<Vec<M>> {
-        let (filter,hidden_fields)=self.prepare_get();
+        let (filter, hidden_fields) = self.prepare_get();
         let collection = self.db.collection::<Document>(self.collection_name);
         let mut find = collection.find(filter);
-        find=self.prepare_find(find);
+        find = self.prepare_find(find);
 
         let mut r = vec![];
         let mut cursor = find.await?;
@@ -826,11 +844,11 @@ where
     /// # Notes
     /// - Respects skip/limit/sort/select settings
     /// - Filters out hidden fields unless explicitly made visible
-    pub async fn get_with_session(&self, session:&mut ClientSession) -> Result<Vec<M>> {
-        let (filter,hidden_fields)=self.prepare_get();
+    pub async fn get_with_session(&self, session: &mut ClientSession) -> Result<Vec<M>> {
+        let (filter, hidden_fields) = self.prepare_get();
         let collection = self.db.collection::<Document>(self.collection_name);
         let mut find = collection.find(filter);
-        find=self.prepare_find(find);
+        find = self.prepare_find(find);
 
         let mut r = vec![];
         let mut cursor = find.session(&mut *session).await?;
@@ -850,7 +868,7 @@ where
         Ok(None)
     }
     /// Gets the first matching document with session
-    pub async fn first_with_session(&mut self, session:&mut ClientSession) -> Result<Option<M>> {
+    pub async fn first_with_session(&mut self, session: &mut ClientSession) -> Result<Option<M>> {
         self.query_builder.limit = 1;
         let r = self.get_with_session(session).await?;
         for item in r {
@@ -862,7 +880,7 @@ where
     /// Runs an aggregation pipeline
     pub async fn aggregate(
         &mut self,
-        pipeline: impl IntoIterator<Item = Document>
+        pipeline: impl IntoIterator<Item = Document>,
     ) -> Result<Vec<M>> {
         let collection = self.db.collection::<Document>(self.collection_name);
         let res = collection.aggregate(pipeline);
@@ -899,10 +917,10 @@ where
     /// - Respects skip/limit/sort/select settings
     /// - Filters out hidden fields unless explicitly made visible
     pub async fn get_doc(&self) -> Result<Vec<Document>> {
-        let (filter,_)=self.prepare_get();
+        let (filter, _) = self.prepare_get();
         let collection = self.db.collection::<Document>(self.collection_name);
         let mut find = collection.find(filter);
-        find=self.prepare_find(find);
+        find = self.prepare_find(find);
 
         let mut r = vec![];
         let mut cursor = find.await?;
@@ -920,11 +938,11 @@ where
     /// # Notes
     /// - Respects skip/limit/sort/select settings
     /// - Filters out hidden fields unless explicitly made visible
-    pub async fn get_doc_with_session(&self, session:&mut ClientSession) -> Result<Vec<Document>> {
-        let (filter,_)=self.prepare_get();
+    pub async fn get_doc_with_session(&self, session: &mut ClientSession) -> Result<Vec<Document>> {
+        let (filter, _) = self.prepare_get();
         let collection = self.db.collection::<Document>(self.collection_name);
         let mut find = collection.find(filter);
-        find=self.prepare_find(find);
+        find = self.prepare_find(find);
 
         let mut r = vec![];
         let mut cursor = find.session(&mut *session).await?;
@@ -944,7 +962,10 @@ where
         Ok(None)
     }
     /// Gets the first matching document with session
-    pub async fn first_doc_with_session(&mut self, session:&mut ClientSession) -> Result<Option<Document>> {
+    pub async fn first_doc_with_session(
+        &mut self,
+        session: &mut ClientSession,
+    ) -> Result<Option<Document>> {
         self.query_builder.limit = 1;
         let r = self.get_doc_with_session(session).await?;
         for item in r {
@@ -956,7 +977,7 @@ where
     /// Runs an aggregation pipeline
     pub async fn aggregate_doc(
         &mut self,
-        pipeline: impl IntoIterator<Item = Document>
+        pipeline: impl IntoIterator<Item = Document>,
     ) -> Result<Vec<Document>> {
         let collection = self.db.collection::<Document>(self.collection_name);
         let res = collection.aggregate(pipeline);
@@ -984,4 +1005,37 @@ where
         Ok(r)
     }
 
+    /// Creates a cursor for iterating over documents in the collection.
+    ///
+    ///
+    /// # Returns
+    /// - `Result<Cursor<Document>>`: A MongoDB cursor that can be used to iterate over documents
+    /// - Returns an error if the query execution fails
+    ///
+    /// # Example
+    /// ```rust
+    /// let cursor = User::new_model(db).cursor().await?;
+    /// while let Some(doc) = cursor.next().await {
+    ///     // process document
+    /// }
+    /// ```
+    pub async fn cursor(&self) -> Result<Cursor<Document>> {
+        let (filter, _) = self.prepare_get();
+        let collection = self.db.collection::<Document>(self.collection_name);
+        let mut find = collection.find(filter);
+        find = self.prepare_find(find).no_cursor_timeout(true);
+        let cursor = find.await?;
+        Ok(cursor)
+    }
+    pub async fn cursor_with_session(
+        &self,
+        session: &mut ClientSession,
+    ) -> Result<SessionCursor<Document>> {
+        let (filter, _) = self.prepare_get();
+        let collection = self.db.collection::<Document>(self.collection_name);
+        let mut find = collection.find(filter);
+        find = self.prepare_find(find).no_cursor_timeout(true);
+        let cursor = find.session(session).await?;
+        Ok(cursor)
+    }
 }
