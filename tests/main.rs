@@ -52,6 +52,7 @@ async fn test_all() {
     test_count_documents().await;
     test_upsert().await;
     test_save_fill().await;
+    test_create_many().await;
     test_save_and_retrieve().await;
     test_find_one_with_visibility().await;
     test_cursor_iteration().await;
@@ -59,8 +60,46 @@ async fn test_all() {
     test_delete_operation().await;
     test_find_and_collect_multiple().await;
     test_transaction_with_session().await;
+    test_select().await;
 }
 
+async fn test_select() {
+    let db = get_db().await;
+    cleanup_users(&db).await;
+
+    let mut user_model = User::new_model(&db);
+    user_model.name = "test_visibility".to_string();
+    user_model.phone = "555555555".to_string();
+    user_model.password = "secret".to_string();
+    user_model.create().await.unwrap();
+
+
+    let hidden_user = User::new_model(&db)
+        .select(doc!{"name":1})
+        .r#where(doc! {"name": "test_visibility"})
+        .first()
+        .await
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(
+        hidden_user.phone, "",
+        "phone should be hidden"
+    );
+    let hidden_user = User::new_model(&db)
+        .select(doc!{"name":1})
+        .r#where(doc! {"name": "test_visibility"})
+        .first_doc()
+        .await
+        .unwrap()
+        .unwrap();
+
+    assert!(
+        hidden_user.get("phone").is_none(),
+        "phone should be hidden"
+    );
+    cleanup_users(&db).await;
+}
 async fn test_count_documents() {
     let db = get_db().await;
     cleanup_users(&db).await;
@@ -203,6 +242,32 @@ async fn test_save_fill() {
 
     cleanup_users(&db).await;
 }
+async fn test_create_many() {
+    let db = get_db().await;
+    cleanup_users(&db).await;
+
+    User::new_model(&db).create_many_doc(vec![doc!{"name":"test1","phone":"123"},doc!{"name":"test2","phone":"124"}]).await.unwrap();
+
+    let fetched_user = User::new_model(&db)
+        .count_documents()
+        .await
+        .unwrap();
+
+
+    assert_eq!(2,fetched_user);
+
+    let fetched_user = User::new_model(&db)
+        .r#where(doc! {"name": "test1"})
+        .first()
+        .await
+        .unwrap()
+        .unwrap();
+
+    assert_eq!("test1".to_string(), fetched_user.name);
+    assert_eq!("123".to_string(), fetched_user.phone);
+
+    cleanup_users(&db).await;
+}
 
 async fn test_save_and_retrieve() {
     let db = get_db().await;
@@ -282,7 +347,6 @@ async fn test_cursor_iteration() {
     let mut count = 0;
     while let Some(doc) = cursor.next().await {
         let doc = doc.unwrap();
-        println!("{:?}", doc.get_str("name"));
         assert!(
             doc.get_str("name")
                 .unwrap()

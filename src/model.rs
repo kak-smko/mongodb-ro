@@ -8,7 +8,7 @@ use mongodb::bson::{doc, to_document, Document};
 use mongodb::bson::{Bson, DateTime};
 use mongodb::error::{Error, Result};
 use mongodb::options::{CountOptions, IndexOptions};
-use mongodb::results::InsertOneResult;
+use mongodb::results::{InsertManyResult, InsertOneResult};
 use mongodb::{bson, ClientSession, Collection, Cursor, Database, IndexModel, SessionCursor};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -473,18 +473,21 @@ where
     /// # Notes
     /// - Automatically adds timestamps if configured
     pub async fn create(&self) -> Result<InsertOneResult> {
-        let data = self.add_times_to_data(self.inner_to_doc()?);
+        let mut data = self.add_times_to_data(self.inner_to_doc()?);
 
-        let r = self
+        match self
             .db
             .collection(self.collection_name)
             .insert_one(data.clone())
-            .await;
-        if r.is_ok() {
-            self.finish(&self.req, "create", Document::new(), data, None)
-                .await;
+            .await{
+            Ok(r) => {
+                data.insert("_id",r.inserted_id.clone());
+                self.finish(&self.req, "create", Document::new(), data, None)
+                    .await;
+                Ok(r)
+            }
+            Err(e) => {Err(e)}
         }
-        r
     }
 
     /// Creates a new document in the collection wit session
@@ -498,34 +501,40 @@ where
         &self,
         session: &mut ClientSession,
     ) -> Result<InsertOneResult> {
-        let data = self.add_times_to_data(self.inner_to_doc()?);
-        let r = self
+        let mut data = self.add_times_to_data(self.inner_to_doc()?);
+        match self
             .db
             .collection(self.collection_name)
             .insert_one(data.clone())
             .session(&mut *session)
-            .await;
-        if r.is_ok() {
-            self.finish(&self.req, "create", Document::new(), data, Some(session))
-                .await;
+            .await{
+            Ok(r) => {
+                data.insert("_id",r.inserted_id.clone());
+                self.finish(&self.req, "create", Document::new(), data, Some(session))
+                    .await;
+                Ok(r)
+            }
+            Err(e) => {Err(e)}
         }
-        r
     }
 
     /// Creates a new document from raw BSON
     pub async fn create_doc(&self, data: Document) -> Result<InsertOneResult> {
-        let data = self.add_times_to_data(data);
+        let mut data = self.add_times_to_data(data);
 
-        let r = self
+        match self
             .db
             .collection(self.collection_name)
             .insert_one(data.clone())
-            .await;
-        if r.is_ok() {
-            self.finish(&self.req, "create", Document::new(), data, None)
-                .await;
+            .await{
+            Ok(r) => {
+                data.insert("_id",r.inserted_id.clone());
+                self.finish(&self.req, "create", Document::new(), data, None)
+                    .await;
+                Ok(r)
+            }
+            Err(e) => {Err(e)}
         }
-        r
     }
 
     /// Creates a new document from raw BSON with session
@@ -534,21 +543,75 @@ where
         data: Document,
         session: &mut ClientSession,
     ) -> Result<InsertOneResult> {
-        let data = self.add_times_to_data(data);
+        let mut data = self.add_times_to_data(data);
 
-        let r = self
+        match self
             .db
             .collection(self.collection_name)
             .insert_one(data.clone())
             .session(&mut *session)
-            .await;
-        if r.is_ok() {
-            self.finish(&self.req, "create", Document::new(), data, Some(session))
-                .await;
+            .await{
+            Ok(r) => {
+                data.insert("_id",r.inserted_id.clone());
+                self.finish(&self.req, "create", Document::new(), data, Some(session))
+                    .await;
+                Ok(r)
+            }
+            Err(e) => {Err(e)}
         }
-        r
     }
 
+    /// Creates many document from raw BSON
+    pub async fn create_many_doc(&self, data: Vec<Document>) -> Result<InsertManyResult> {
+        let mut d=vec![];
+        for item in data {
+            d.push(self.add_times_to_data(item));
+        }
+
+        match self
+            .db
+            .collection(self.collection_name)
+            .insert_many(d)
+            .await{
+            Ok(r) => {
+                let inserted_ids: HashMap<String, Bson> = r.inserted_ids.clone()
+                    .into_iter()
+                    .map(|(k, v)| (k.to_string(), v))
+                    .collect();
+                self.finish(&self.req, "create_many", Document::new(), doc! {"_ids": Bson::Document(Document::from_iter(inserted_ids))}, None)
+                    .await;
+                Ok(r)
+            }
+            Err(e) => {Err(e)}
+        }
+    }
+    /// Creates many document from raw BSON with session
+    pub async fn create_many_doc_with_session(&self, data: Vec<Document>,session: &mut ClientSession,) -> Result<InsertManyResult> {
+        let mut d=vec![];
+        for item in data {
+            d.push(self.add_times_to_data(item));
+        }
+
+        match self
+            .db
+            .collection(self.collection_name)
+            .insert_many(d)
+            .session(&mut *session)
+            .await{
+            Ok(r) => {
+                let inserted_ids: HashMap<String, Bson> = r.inserted_ids.clone()
+                    .into_iter()
+                    .map(|(k, v)| (k.to_string(), v))
+                    .collect();
+                self.finish(&self.req, "create_many", Document::new(),
+                            doc! {"_ids": Bson::Document(Document::from_iter(inserted_ids))},
+                            Some(session))
+                    .await;
+                Ok(r)
+            }
+            Err(e) => {Err(e)}
+        }
+    }
     fn prepare_update(&self, data: Document) -> Result<(Document, Document)> {
         let mut data = data;
         let mut is_opt = false;
